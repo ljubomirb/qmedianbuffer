@@ -89,8 +89,8 @@ public:
 
 	bool deleteOlderThanInterval(unsignedT currentTimeStamp, unsignedT interval);
 
-	T max();
-	T min();
+	T maxValue();
+	T minValue();
 
 	T median();
 	T medianAverage();
@@ -125,8 +125,8 @@ private:
 
 	static T _average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
-	//to be depreciated
-	//static T quick_select(uint8_t k, uint8_t head, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	//this needs to be tested - is quick select (without previous sort) faster then sort+median?
+	static T quick_select(uint8_t k, uint8_t head, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 	static void sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
 	//itemQ items[_capacity]; //={1,200,2,6,9};
@@ -370,13 +370,13 @@ void qmedianbuffer<T, unsignedT>::intervalsToValues() {
 //-----------statistical functions-------------
 
 template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::min() {
+T qmedianbuffer<T, unsignedT>::minValue() {
 	sortToValuesIfNeeded();
 	return getItemAtPositionPtr(0)->value;
 }
 
 template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::max() {
+T qmedianbuffer<T, unsignedT>::maxValue() {
 	sortToValuesIfNeeded();
 	return getItemAtPositionPtr(getCount() - 1)->value;
 }
@@ -424,11 +424,13 @@ T qmedianbuffer<T, unsignedT>::medianAverageInterval() {
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::medianRateOfChange() {
+	if (getCount() < 2)	return T();
 	return 1 / medianInterval();
 }
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::medianAverageRateOfChange() {
+	if (getCount() < 2)	return T();
 	return 1 / medianAverageInterval();
 }
 
@@ -448,6 +450,7 @@ T qmedianbuffer<T, unsignedT>::averageInterval() {
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::averageRateOfChange() {
+	if (getCount() < 2)	return T();
 	return 1 / averageInterval();
 }
 
@@ -542,10 +545,11 @@ T qmedianbuffer<T, unsignedT>::_medianAverage2(uint8_t tail, uint8_t len, itemQ 
 
 //---------------static select and sort functions------------------
 
+
 //standard insertionSort algorithm, done in one pass
 template<typename T, typename unsignedT>
 void qmedianbuffer<T, unsignedT>::sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
-	int i, j;
+	uint8_t i, j;
 	itemQ key;
 	for (i = 1; i < len; i++)
 	{
@@ -560,4 +564,75 @@ void qmedianbuffer<T, unsignedT>::sort(uint8_t tail, uint8_t len, itemQ *arr, ui
 		arr[getTruePos(j + 1, tail, arrCapacity)] = key;
 	}
 }
+
+#pragma region unused
+//Standard quick select, returns the k-th smallest item in array arr of length len
+//that is - result is value of position in rearragned array (for k=2, len=5; =>3)
+
+//NOTE: THIS IS CURRENTLY UNUSED; REMANS TO BE TESTED IF QS+MEDIAN+SORTBACK IS FASTER THEN SORT+MEDIAN+SORTBACK WITH REAL WORLD NUMBERS!!!
+template<typename T, typename unsignedT>
+T qmedianbuffer<T, unsignedT>::quick_select(uint8_t k, uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
+	/*
+		uint8_t left = 0, right = len - 1;
+	uint8_t pos, i;
+	itemMB pivot;
+	itemMB temp;
+	while (left < right) {
+		pivot = arr[k];
+		//swap
+		temp = arr[k];
+		arr[k] = arr[right], arr[right] = temp;
+		for (i = pos = left; i < right; i++) {
+			if (arr[i].value < pivot.value)
+			{
+				//swap
+				temp = arr[i];
+				arr[i] = arr[pos], arr[pos] = temp;
+				pos++;
+			}
+		}
+		//swap
+		temp = arr[right];
+		arr[right] = arr[pos], arr[pos] = temp;
+		if (pos == k) break;
+		if (pos < k) left = pos + 1;
+		else right = pos - 1;
+	}
+	return arr[k].value;
+	//tested, using inline swap is 5 time slower
+	//auto swap = [](itemMB a, itemMB b){itemMB temp = a; a = b; b = temp; };
+	*/
+
+	//and now, unoptimised solution, if someone is to test
+	uint8_t left = 0, right = len - 1;
+	uint8_t pos, i;
+	itemQ pivot;
+	itemQ temp;
+	while (left < right) {
+		pivot = arr[getTruePos(k, tail, arrCapacity)];
+		//swap
+		temp = arr[getTruePos(k, tail, arrCapacity)];
+		arr[getTruePos(k, tail, arrCapacity)] = arr[getTruePos(right, tail, arrCapacity)], arr[getTruePos(right, tail, arrCapacity)] = temp;
+		for (i = pos = left; i < right; i++) {
+			if (getSortValueFunc(arr[getTruePos(i, tail, arrCapacity)]) < getSortValueFunc(pivot))
+			{
+				//swap
+				temp = arr[getTruePos(i, tail, arrCapacity)];
+				arr[getTruePos(i, tail, arrCapacity)] = arr[getTruePos(pos, tail, arrCapacity)], arr[getTruePos(pos, tail, arrCapacity)] = temp;
+				pos++;
+			}
+		}
+		//swap
+		temp = arr[getTruePos(right, tail, arrCapacity)];
+		arr[getTruePos(right, tail, arrCapacity)] = arr[getTruePos(pos, tail, arrCapacity)], arr[getTruePos(pos, tail, arrCapacity)] = temp;
+		if (pos == k) break;
+		if (pos < k) left = pos + 1;
+		else right = pos - 1;
+	}
+	return getSortValueFunc(arr[getTruePos(k, tail, arrCapacity)]);
+	//tested, using inline swap is 5 times slower
+	//auto swap = [](itemQ a, itemQ b){itemQ temp = a; a = b; b = temp; };
+}
+#pragma endregion
+
 #endif
