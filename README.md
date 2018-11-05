@@ -58,11 +58,11 @@ Most often, those values are simple uint8_t or uint16_t and there is no need for
     <td class="tg-0pky">deletes older then (now - interval)</td>
   </tr>
   <tr>
-    <td class="tg-0pky">`T max()`</td>
+    <td class="tg-0pky">`T maxValue()`</td>
     <td class="tg-0pky">gets max value</td>
   </tr>
   <tr>
-    <td class="tg-0pky">`T min()`</td>
+    <td class="tg-0pky">`T minValue()`</td>
     <td class="tg-0pky">gets min value</td>
   </tr>
   <tr>
