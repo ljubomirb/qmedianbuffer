@@ -184,6 +184,7 @@ T qmedianbuffer<T, unsignedT>::pop() {
 
 	if (isEmpty()) return T();
 
+	valuesAreIntervals = false; //intervals are for sure no longer the same
 	sortToInsertSequenceIfNeeded();
 
 	itemQ *item = getItemAtPositionPtr(0);
