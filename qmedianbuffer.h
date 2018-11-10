@@ -5,7 +5,7 @@
    -median() median value (the same, original value as in buffer)
    -medianAverage() median value, but average of 2 or 3 entries
    -average() average value, with slight error to avoid big number problem;
-   test and choose <double> it is important for you
+   test and choose <double> if it is important to you
    -rateOfChange() 1/averageInterval (used for example for interrupts/sec cases)
 
    Usecase:
@@ -16,12 +16,12 @@
    Important:
    type of <T> must be big enogh to hold SUM of entire array if any function that averages
    values is used. To handle this, just set T big enough.
-   However, humans tend to forget this, and thus unexpected values could appear unnoticed
+   However, humans tend to forget this and thus unexpected values could appear unnoticed
    because of overflow. So, approach here is the oposite: approximation on averaging is used,
    with introduction of small error every time, but less fail when bigger numbers appear.
    If you happen to notice that precission is not good enough for you, turn that off,
-   and set <T> as <double> (preffered), or if you use integer, then double its size,
-   so <uint32_t> instead of <uint16_t>.
+   and set <T> as <double> (preffered), or if you use integer, double its size, that is
+   use <uint32_t> instead of <uint16_t>.
 
    Implementation:
    Optimised to be used in cases when there is a constant stream of data,
@@ -40,14 +40,15 @@
    before sorting.
 
    Note on values:
-   -<T> type of value used - integer or double or whatever
+   -<T> type of numeric value used - integer, or double or whatever
    -<unsignedT> type of time value, either unsigned <uint8_t>, <uint16_t>, <uint32_t>,
-   depending how deep down you plan to remember insertion time
+    depending how deep down you plan to remember insertion time
    -each data entry is size <T> + <unsignedT> + 1 byte
    -max count 255
    -take care, any average() operation is with slight error due to approximations
-   -it is a smart thing to clear buffer if you do not use time track, after each median,
-    so you always have a fresh set of data
+   -it is a smart thing to clear buffer after each statistical function, 
+    (if you do not use time track) to remove old values, so that way you always have
+	a fresh set of data
    */
 
 #ifndef qmedianbuffer_h
@@ -100,6 +101,7 @@ public:
 	T medianAverageInterval();
 	T medianRateOfChange();			// 1/medianInterval
 	T medianAverageRateOfChange();	// 1/medianAverageInterval
+
 	T averageInterval();
 	T averageRateOfChange();
 
@@ -107,7 +109,7 @@ public:
 		cout << "-----------" << endl;
 		for (uint8_t i = 0; i < getCount(); i++){
 			itemQ *item = getItemAtPositionPtr(i);
-			cout << "V: " << item->value << "\t O: " << (int)item->insertOrder << "\t T: " << item->time << endl;
+			cout << "V: " << item->value << "\t O: " << (int)item->insertOrder << "\t T: " << (int)item->time << endl;
 		}
 	}*/
 
@@ -120,16 +122,12 @@ private:
 
 	static uint8_t getTruePos(uint8_t pos, uint8_t len, uint8_t capacity);
 
-	static T _median2(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
-	static T _medianAverage2(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static T _median(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static T _medianAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
 	static T _average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
-
-	//this needs to be tested - is quick select (without previous sort) faster then sort+median?
-	static T quick_select(uint8_t k, uint8_t head, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 	static void sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
-	//itemQ items[_capacity]; //={1,200,2,6,9};
 	itemQ* items;
 	uint8_t _capacity{};
 	uint8_t _head{};
@@ -141,12 +139,11 @@ private:
 	static T getItemValue(const itemQ &item);
 	static T getItemInsertOrder(const itemQ &item);
 
-	bool isInInsertSequence = true;	//items are in the same order as when being put
 	bool valuesAreIntervals = false;
 
 	void resetItemOrderOldestToZero();	//oldest item will have internal counter set to zero, others will increment
-	void sortToInsertSequenceIfNeeded();
-	void sortToValuesIfNeeded();
+	void sortToInsertSequence();
+	void sortToValues();
 	void intervalsToValues();
 
 	itemQ* peekItem();
@@ -158,16 +155,13 @@ private:
 template<typename T, typename unsignedT>
 void qmedianbuffer<T, unsignedT>::push(T number, unsignedT currentTime) {
 	_pushCount++; //non important, user info counter of all push operations
-	
-	sortToInsertSequenceIfNeeded();
 
 	itemQ newitem;
 	newitem.value = number;
 	valuesAreIntervals = false;
 
 	newitem.time = currentTime;
-
-	//insertOrder is not important now, it is written pre shuffle, for returning back
+	//newitem.insertOrder is not important now; it is written pre shuffle, for returning back
 
 	items[_head] = newitem;
 	if (_isFull){
@@ -184,8 +178,7 @@ T qmedianbuffer<T, unsignedT>::pop() {
 
 	if (isEmpty()) return T();
 
-	valuesAreIntervals = false; //intervals are for sure no longer the same
-	sortToInsertSequenceIfNeeded();
+	valuesAreIntervals = false; //intervals are no longer valid
 
 	itemQ *item = getItemAtPositionPtr(0);
 	_isFull = false; //it will for sure not be full
@@ -193,11 +186,13 @@ T qmedianbuffer<T, unsignedT>::pop() {
 	return item->value;
 }
 
+//returns value of oldest item
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::peek() {
 	return peekItem()->value;
 }
 
+//returns time of oldest item
 template<typename T, typename unsignedT>
 unsignedT qmedianbuffer<T, unsignedT>::peekTime() {
 	return peekItem()->time;
@@ -205,8 +200,6 @@ unsignedT qmedianbuffer<T, unsignedT>::peekTime() {
 
 template<typename T, typename unsignedT>
 typename qmedianbuffer<T, unsignedT>::itemQ* qmedianbuffer<T, unsignedT>::peekItem() {
-
-	sortToInsertSequenceIfNeeded();
 
 	itemQ* item = getItemAtPositionPtr(0);
 	return item;
@@ -216,7 +209,7 @@ template<typename T, typename unsignedT>
 bool qmedianbuffer<T, unsignedT>::deleteOlderThanInterval(unsignedT currentTimeStamp, unsignedT interval) {
 
 	if (isEmpty()){
-		return false; //play stupid, do not throw error
+		return false;
 	}
 	if ((currentTimeStamp - peekTime()) < interval){
 		pop();
@@ -237,13 +230,13 @@ bool qmedianbuffer<T, unsignedT>::isFull() {
 	return _isFull;
 }
 
-//isEmpty() will be calculated each time it is called
+//tests if empty, and returns (mem consumption remains the same)
 template<typename T, typename unsignedT>
 bool qmedianbuffer<T, unsignedT>::isEmpty() {
 	return (!_isFull && (_head == _tail));
 }
 
-//getCount() will be calculated each time it is called
+//returns freshly calculated count, each time it is called
 template<typename T, typename unsignedT>
 uint8_t qmedianbuffer<T, unsignedT>::getCount() {
 	uint8_t retCount = _capacity;
@@ -258,7 +251,7 @@ uint8_t qmedianbuffer<T, unsignedT>::getCount() {
 	return retCount;
 }
 
-//getPushCount() returns simple count of push operations
+//returns simple count of push operations
 template<typename T, typename unsignedT>
 uint8_t qmedianbuffer<T, unsignedT>::getPushCount(){
 	return _pushCount;
@@ -280,7 +273,7 @@ typename qmedianbuffer<T, unsignedT>::itemQ* qmedianbuffer<T, unsignedT>::getIte
 		item = &items[_tail];
 	}
 	else{
-		uint8_t realPosition = (_tail + position) % _capacity;
+		uint8_t realPosition = (_tail + position) % _capacity; //micro optimisation exists for this also, but reduces readability
 		item = &items[realPosition];
 	}
 
@@ -303,7 +296,7 @@ T qmedianbuffer<T, unsignedT>::getItemValue(const itemQ &item) {
 //predicate to pass to sort algorithm to sort by initial order
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::getItemInsertOrder(const itemQ &item) {
-	return (T)item.insertOrder;
+	return (T)item.insertOrder; //casting needed for uniformity in sort
 }
 
 //----------------order functions-------------
@@ -320,33 +313,28 @@ void qmedianbuffer<T, unsignedT>::resetItemOrderOldestToZero() {
 
 //back to input sequence, from numbers saved in each item, so we can push in sequence
 template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::sortToInsertSequenceIfNeeded() {
-	if (!isInInsertSequence && !isEmpty()){
+void qmedianbuffer<T, unsignedT>::sortToInsertSequence() {
+	if (!isEmpty()){
 		sort(_tail, getCount(), items, _capacity, getItemInsertOrder);
 	}
-	isInInsertSequence = true;
 }
 
-//sort values; remember to return it to insert order for pop/push/peek
+//sort array order by values;
 template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::sortToValuesIfNeeded() {
-	if (isInInsertSequence && !isEmpty()){
+void qmedianbuffer<T, unsignedT>::sortToValues() {
+	if (!isEmpty()){
 		resetItemOrderOldestToZero();
 		sort(_tail, getCount(), items, _capacity, getItemValue);
 	}
-	isInInsertSequence = false;
 }
 
 //---------fill values with interval between them----------
 
-//calculate intervals between items in sequence (or force them in sequence if needed)
+//calculate intervals between items in sequence
 template<typename T, typename unsignedT>
 void qmedianbuffer<T, unsignedT>::intervalsToValues() {
 
 	if (!valuesAreIntervals){
-
-		//it may happen that median was called, and everything is sorted by value, but values are not intervals
-		sortToInsertSequenceIfNeeded();
 
 		uint8_t count = getCount();
 		if (count < 2)	return; //or array error in loop
@@ -364,7 +352,7 @@ void qmedianbuffer<T, unsignedT>::intervalsToValues() {
 		}
 		itemPrev->value = 0; //but median should ignore it anyway
 		valuesAreIntervals = true;
-	}	
+	}
 }
 
 
@@ -372,31 +360,42 @@ void qmedianbuffer<T, unsignedT>::intervalsToValues() {
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::minValue() {
-	sortToValuesIfNeeded();
-	return getItemAtPositionPtr(0)->value;
+	sortToValues();
+	T retVal = getItemAtPositionPtr(0)->value;
+	sortToInsertSequence();
+	return retVal;
+
 }
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::maxValue() {
-	sortToValuesIfNeeded();
-	return getItemAtPositionPtr(getCount() - 1)->value;
+	sortToValues();
+	T retVal = getItemAtPositionPtr(getCount() - 1)->value;
+	sortToInsertSequence();
+	return retVal;
 }
+
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::medianAverage() {
-	sortToValuesIfNeeded();
-	return _medianAverage2(_tail, getCount(), items, _capacity, getItemValue);
+	sortToValues();
+	T retVal = _medianAverage(_tail, getCount(), items, _capacity, getItemValue);
+	sortToInsertSequence();
+	return retVal;
 }
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::median() {
-	sortToValuesIfNeeded();
-	return _median2(_tail, getCount(), items, _capacity, getItemValue);
+	sortToValues();
+	T retVal = _median(_tail, getCount(), items, _capacity, getItemValue);
+	sortToInsertSequence();
+	return retVal;
 }
 
 //if items in buffer are type of occurence, of no important value
 //then measure average interval (at least 2 items to make any sense)
-//items are sorted if needed, intervals are written to value field
+//intervals are written to value field, and no longer valid as plan "value"
+//when pop/push happens, items are also no longer valid
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::medianInterval() {
 
@@ -404,23 +403,29 @@ T qmedianbuffer<T, unsignedT>::medianInterval() {
 	if (length < 2)	return T();
 
 	intervalsToValues();	//will not run if already done
-	sortToValuesIfNeeded();	//will not run if already sorted by value
-	
+	sortToValues();
+
 	//check all, but ignore last one, it should be 0!
-	return _median2(_tail, length - 1, items, _capacity, getItemValue);
+	T retVal = _median(_tail, length - 1, items, _capacity, getItemValue);
+
+	sortToInsertSequence();
+	return retVal;
 }
 
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::medianAverageInterval() {
-	
+
 	uint8_t length = getCount();
 	if (length < 2)	return T();
 
 	intervalsToValues();	//will not run if already done
-	sortToValuesIfNeeded();	//will not run if already sorted by value
+	sortToValuesIfNeeded();
 
 	//check all, but ignore last one, it should be 0!
-	return _medianAverage2(_tail, length - 1, items, _capacity, getItemValue);
+	T retVal = _medianAverage(_tail, length - 1, items, _capacity, getItemValue);
+
+	sortToInsertSequence();
+	return retVal;
 }
 
 template<typename T, typename unsignedT>
@@ -435,14 +440,19 @@ T qmedianbuffer<T, unsignedT>::medianAverageRateOfChange() {
 	return 1 / medianAverageInterval();
 }
 
+
+template<typename T, typename unsignedT>
+T qmedianbuffer<T, unsignedT>::average() {
+	//average does not shuffle order of items
+	return _average(_tail, getCount(), items, _capacity, getItemValue);
+}
+
 template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::averageInterval() {
 
 	uint8_t length = getCount();
 	if (length < 2)	return T();
 
-	//if doing average, order of items is not that important
-	//but items may be sorted by different functions
 	intervalsToValues();
 
 	//check all, but ignore last one, it should be 0!
@@ -453,12 +463,6 @@ template<typename T, typename unsignedT>
 T qmedianbuffer<T, unsignedT>::averageRateOfChange() {
 	if (getCount() < 2)	return T();
 	return 1 / averageInterval();
-}
-
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::average() {
-	//average does not shuffle order of items
-	return _average(_tail, getCount(), items, _capacity, getItemValue);
 }
 
 
@@ -490,7 +494,7 @@ T qmedianbuffer<T, unsignedT>::_average(uint8_t tail, uint8_t len, itemQ *arr, u
 
 //pick median in previously sorted array, it will always be exact number
 template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::_median2(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+T qmedianbuffer<T, unsignedT>::_median(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
 	if (len == 0) {
 		return T();
 	}
@@ -503,7 +507,7 @@ T qmedianbuffer<T, unsignedT>::_median2(uint8_t tail, uint8_t len, itemQ *arr, u
 
 //pick median in previously sorted array
 template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::_medianAverage2(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+T qmedianbuffer<T, unsignedT>::_medianAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
 	if (len == 0) {
 		return T();
 	}
@@ -546,94 +550,23 @@ T qmedianbuffer<T, unsignedT>::_medianAverage2(uint8_t tail, uint8_t len, itemQ 
 
 //---------------static select and sort functions------------------
 
-
 //standard insertionSort algorithm, done in one pass
 template<typename T, typename unsignedT>
 void qmedianbuffer<T, unsignedT>::sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
-	uint8_t i, j;
-	itemQ key;
+	uint8_t i;
+	int j; //needs to be signed since in while loop, it will become -1 to exit while
+	itemQ tmp;
 	for (i = 1; i < len; i++)
 	{
-		key = arr[getTruePos(i, tail, arrCapacity)];
+		tmp = arr[getTruePos(i, tail, arrCapacity)];
 		j = i - 1;
 
-		while (j >= 0 && getSortValueFunc(arr[getTruePos(j, tail, arrCapacity)]) > getSortValueFunc(key))
+		while (j >= 0 && getSortValueFunc(arr[getTruePos(j, tail, arrCapacity)]) > getSortValueFunc(tmp))
 		{
 			arr[getTruePos(j + 1, tail, arrCapacity)] = arr[getTruePos(j, tail, arrCapacity)];
 			j = j - 1;
 		}
-		arr[getTruePos(j + 1, tail, arrCapacity)] = key;
+		arr[getTruePos(j + 1, tail, arrCapacity)] = tmp;
 	}
 }
-
-#pragma region unused
-//Standard quick select, returns the k-th smallest item in array arr of length len
-//that is - result is value of position in rearragned array (for k=2, len=5; =>3)
-
-//NOTE: THIS IS CURRENTLY UNUSED; REMANS TO BE TESTED IF QS+MEDIAN+SORTBACK IS FASTER THEN SORT+MEDIAN+SORTBACK WITH REAL WORLD NUMBERS!!!
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::quick_select(uint8_t k, uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
-	/*
-		uint8_t left = 0, right = len - 1;
-	uint8_t pos, i;
-	itemMB pivot;
-	itemMB temp;
-	while (left < right) {
-		pivot = arr[k];
-		//swap
-		temp = arr[k];
-		arr[k] = arr[right], arr[right] = temp;
-		for (i = pos = left; i < right; i++) {
-			if (arr[i].value < pivot.value)
-			{
-				//swap
-				temp = arr[i];
-				arr[i] = arr[pos], arr[pos] = temp;
-				pos++;
-			}
-		}
-		//swap
-		temp = arr[right];
-		arr[right] = arr[pos], arr[pos] = temp;
-		if (pos == k) break;
-		if (pos < k) left = pos + 1;
-		else right = pos - 1;
-	}
-	return arr[k].value;
-	//tested, using inline swap is 5 time slower
-	//auto swap = [](itemMB a, itemMB b){itemMB temp = a; a = b; b = temp; };
-	*/
-
-	//and now, unoptimised solution, if someone is to test
-	uint8_t left = 0, right = len - 1;
-	uint8_t pos, i;
-	itemQ pivot;
-	itemQ temp;
-	while (left < right) {
-		pivot = arr[getTruePos(k, tail, arrCapacity)];
-		//swap
-		temp = arr[getTruePos(k, tail, arrCapacity)];
-		arr[getTruePos(k, tail, arrCapacity)] = arr[getTruePos(right, tail, arrCapacity)], arr[getTruePos(right, tail, arrCapacity)] = temp;
-		for (i = pos = left; i < right; i++) {
-			if (getSortValueFunc(arr[getTruePos(i, tail, arrCapacity)]) < getSortValueFunc(pivot))
-			{
-				//swap
-				temp = arr[getTruePos(i, tail, arrCapacity)];
-				arr[getTruePos(i, tail, arrCapacity)] = arr[getTruePos(pos, tail, arrCapacity)], arr[getTruePos(pos, tail, arrCapacity)] = temp;
-				pos++;
-			}
-		}
-		//swap
-		temp = arr[getTruePos(right, tail, arrCapacity)];
-		arr[getTruePos(right, tail, arrCapacity)] = arr[getTruePos(pos, tail, arrCapacity)], arr[getTruePos(pos, tail, arrCapacity)] = temp;
-		if (pos == k) break;
-		if (pos < k) left = pos + 1;
-		else right = pos - 1;
-	}
-	return getSortValueFunc(arr[getTruePos(k, tail, arrCapacity)]);
-	//tested, using inline swap is 5 times slower
-	//auto swap = [](itemQ a, itemQ b){itemQ temp = a; a = b; b = temp; };
-}
-#pragma endregion
-
 #endif
