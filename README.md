@@ -54,7 +54,7 @@ Most often, those values are simple uint8_t or uint16_t and there is no need for
     <td class="tg-0pky">resets push counter</td>
   </tr>
   <tr>
-    <td class="tg-0pky">`bool deleteOlderThanInterval()`</td>
+    <td class="tg-0pky">`bool deleteOld()`</td>
     <td class="tg-0pky">deletes older then (now - interval)</td>
   </tr>
   <tr>
@@ -66,17 +66,45 @@ Most often, those values are simple uint8_t or uint16_t and there is no need for
     <td class="tg-0pky">gets min value</td>
   </tr>
   <tr>
+    <td class="tg-0pky">`T range()`</td>
+    <td class="tg-0pky">max - min</td>
+  </tr>
+   <tr>
+    <td class="tg-0pky">`uint8_t occurenceOfValue()`</td>
+    <td class="tg-0pky">for a given value, how many time it appears</td>
+  </tr>
+   <tr>
+    <td class="tg-0pky">`resultingT frequencyOfValue()`</td>
+    <td class="tg-0pky">for a given value, 1 / occurenceOfValue</td>
+  </tr>  
+  <tr>
+    <td class="tg-0pky">`meanAbsoluteDeviationAroundAverage()`</td>
+    <td class="tg-0pky">average of abs(each value-average)</td>
+  </tr>
+  <tr>
+    <td class="tg-0pky">`meanAbsoluteDeviationAroundMedianAverage()`</td>
+    <td class="tg-0pky">average of abs(each value-median)</td>
+  </tr>
+  <tr>
+    <td class="tg-0pky">`T average()`</td>
+    <td class="tg-0pky">gets average of all items</td>
+  </tr>  
+  <tr>
     <td class="tg-0pky">`T median()`</td>
     <td class="tg-0pky">gets median, original entry no matter what</td>
   </tr>
   <tr>
     <td class="tg-0pky">`T medianAverage()`</td>
-    <td class="tg-0pky">gets median, average of 2 or 3 median values</td>
+    <td class="tg-0pky">gets median, average of values around median at max distance from</td>
+  </tr>
+   <tr>
+    <td class="tg-0pky">`T averageInterval()`</td>
+    <td class="tg-0pky">gets average interval of time</td>
   </tr>
   <tr>
-    <td class="tg-0pky">`T average()`</td>
-    <td class="tg-0pky">gets average of all items</td>
-  </tr>
+    <td class="tg-0pky">`T averageRateOfChange()`</td>
+    <td class="tg-0pky">1 / averageInterval</td>
+  </tr>  
   <tr>
     <td class="tg-0pky">`T medianInterval()`</td>
     <td class="tg-0pky">gets median time interval between sequential items</td>
@@ -92,21 +120,11 @@ Most often, those values are simple uint8_t or uint16_t and there is no need for
   <tr>
     <td class="tg-0pky">`T medianAverageRateOfChange()`</td>
     <td class="tg-0pky">1 / medianAverageInterval (usefull for count/second measurements)</td>
-  </tr>
-  <tr>
-    <td class="tg-0pky">`T averageInterval()`</td>
-    <td class="tg-0pky">gets average interval</td>
-  </tr>
-  <tr>
-    <td class="tg-0pky">`T averageRateOfChange()`</td>
-    <td class="tg-0pky">1 / averageInterval</td>
-  </tr>
+  </tr> 
 </table>
 
 
-> **Note:** Median and sorting is done using insertion sort algorithm. It remans to be seen if maybe quick select algorithm is better suited in terms of memory/perfomance on average embedded system.
-
-> **Note2:** Median is often expressed as one of two following equations. The latter is used here.
+> **Note:** Median is often expressed as one of two following equations. The latter is used here.
 
     (double)(a[(n - 1) / 2] + a[n / 2]) / 2.0
     (double)(a[(n / 2) - 1] + a[n / 2]) / 2.0
