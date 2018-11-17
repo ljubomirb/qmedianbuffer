@@ -1,84 +1,129 @@
 /* Small circular queue buffer with median and average functions.
-   Ljubomir Blanusa, v0.7 2018; released under MIT licence
+   Ljubomir Blanusa, v0.80 2018; released under MIT licence
 
    Buffer functions returns:
    -median() median value (the same, original value as in buffer)
-   -medianAverage() median value, but average of 2 or 3 entries
+   -medianAverage() median value, but average of surrounding entries
    -average() average value, with slight error to avoid big number problem;
    test and choose <double> if it is important to you
    -rateOfChange() 1/averageInterval (used for example for interrupts/sec cases)
 
    Usecase:
-   sometimes you just need to get median value out of 5-10 entries on low resources,
+   sometimes you just need to get median value out of 5-10 entries on low resource,
    Arduino like systems. Most often, those values are simple uint8_t or uint16_t,
    and there is no need for bigger or more complex solutions.
 
-   Important:
+   NOTE important:
    type of <T> must be big enogh to hold SUM of entire array if any function that averages
    values is used. To handle this, just set T big enough.
    However, humans tend to forget this and thus unexpected values could appear unnoticed
    because of overflow. So, approach here is the oposite: approximation on averaging is used,
    with introduction of small error every time, but less fail when bigger numbers appear.
-   If you happen to notice that precission is not good enough for you, turn that off,
-   and set <T> as <double> (preffered), or if you use integer, double its size, that is
-   use <uint32_t> instead of <uint16_t>.
+   If you happen to notice this, and that precission is not good enough for you, turn it off,
+   and set <resultingT> to <double> (preffered), or if you use integer, double its size, that is
+   use <long> instead of <int>.
+
+   NOTE also:
+   calculating anything needing interval, will delete all original numeric values
 
    Implementation:
    Optimised to be used in cases when there is a constant stream of data,
    but read is less often needed. Therefore, buffer would always be full and ready.
 
    Other designs of queue include one with +1 item in queue, or keeping track of lenght,
-   or using various pointer designs. This one is simple, and tries to conserve memory,
-   to not use multiple copies of array. For this reason, each sort reshuffes original.
+   using various pointer designs, or sometimes creating copy of array during sorting.
+   The one here tries to be simple and conserve memory. For this reason, each sort
+   reshuffes original, and each interval calc replaces numbers with intervals.
 
    The problem of adding to circular buffer is that if sorting is done after each add
    and if buffer was full, and then sorted, old and new items are no longer in sequence.
-   This matters only when items are added (array is optimised for fast adding),
+   This matters only when items are added (this array is optimised for fast adding),
    because age of entry is important for circular approach. Also, no holes should exist,
    so the same should be done before pop.
-   It is here done by using struct with insertOrder info, values of wich are valid just
-   before sorting.
+   It is here done by using struct as array items, with insertOrder info, values of
+   wich are valid just before sorting.
 
    Note on values:
    -<T> type of numeric value used - integer, or double or whatever
-   -<unsignedT> type of time value, either unsigned <uint8_t>, <uint16_t>, <uint32_t>,
-    depending how deep down you plan to remember insertion time
-   -each data entry is size <T> + <unsignedT> + 1 byte
+   -<timeT> type of time value, either unsigned <uint8_t>, <uint16_t>, <uint32_t>,
+   depending how deep down you plan to remember insertion time
+   -<resultingT> type used for math operations; the idea is that you can have
+   any numeric type in buffer, like <uint16_t>, but had result as double (say, 32bits)
+
+   -each data entry is size <T> + <timeT> + 1 byte
+
    -max count 255
    -take care, any average() operation is with slight error due to approximations
-   -it is a smart thing to clear buffer after each statistical function, 
-    (if you do not use time track) to remove old values, so that way you always have
-	a fresh set of data
+   -it is a smart thing to clear buffer after each statistical function,
+   to remove old values, so that way you always have a fresh set of data,
+   or you should take care of time added, and use delete function
    */
 
 #ifndef qmedianbuffer_h
 #define qmedianbuffer_h
-//#if defined(ARDUINO)
-//#include "Arduino.h"
-//#else
-#include <stdint.h>
-//#endif
+#if defined(ARDUINO)
+#include "Arduino.h"
+#else
+#include <cstdint>
+#include <cmath>
+#endif
 
+
+//-------------------------------tuning place---------------------------------------------------
+
+//turn this off (0) if you expect sum will never be near type limit (e.g. will never overflow)
 #define EXPECT_BIG_NUMBERS 1
 
-//using namespace std;
-//<T> is any type of numeric data stored; <unsignedT> is any, but strictly UNSIGNED, numeric type for time data
-template<typename T, typename unsignedT>
+//you should leave this turned on (1) unless you are disciplined enough to know what you're doing
+#define RESTRICT_TYPES_OF_DATA 1
+
+//-----------------------------------------------------------------------------------------------
+
+
+//this implementation of ABS() may be slower but works with both unsigned long and floating types
+#if RESTRICT_TYPES_OF_DATA
+#define absX(value) ((value) < 0 ? -1*(value) : (value))
+#else
+#define absX(value) abs(value)
+#endif
+
+//tests about types; if STD library is available, this may be removed, and std used
+#define is_type_signed(my_type) (((my_type)-1) < 0)
+#define is_type_unsigned(my_type) (((my_type)-1) > 0)
+
+
+/*
+tested: C-style or static_cast<>() casting of the same T primitive type to same type, being implicite or not,
+or to a bigger type (e.g. int to long) has no extra cost after compilation; that is - the compiler will optimise
+and the result would be the same as if there was no casting at all
+*/
+
+
+//<T> numeric data stored; <timeT> strictly UNSIGNED type for time data, <resultingT> return type of math heavy functions
+template<typename T, typename timeT, typename resultingT>
 class qmedianbuffer
 {
+
+#if RESTRICT_TYPES_OF_DATA
+	static_assert(is_type_signed(resultingT), "qmedianbuffer: non-recommended type for <resultingT>; should be any signed type (<int>, <float>, <double>...)");
+	static_assert(is_type_unsigned(timeT), "qmedianbuffer: non-recommended type for <timeT>; should be any unsigned type (<uint16_t>, <uint32_t>...)");
+#endif
+
 public:
+
+	//initiate circular buffer, capacity best to be uneven number
 	qmedianbuffer(uint8_t capacity) {
 		_capacity = capacity;
-		items = new itemQ[capacity]; //={1,200,2,6,9};
+		items = new itemQ[capacity];
 	}
 	~qmedianbuffer() {
 		delete[] items;
 	}
 
-	void push(T number, unsignedT currentTime);
+	void push(T number, timeT currentTime);
 	T pop();
 	T peek();
-	unsignedT peekTime();
+	timeT peekTime();
 	void clear();
 
 	bool isFull();
@@ -88,28 +133,37 @@ public:
 	uint8_t getPushCount();
 	void resetPushCount();
 
-	bool deleteOlderThanInterval(unsignedT currentTimeStamp, unsignedT interval);
+	bool deleteOld(timeT currentTimeStamp, timeT interval);
 
 	T maxValue();
 	T minValue();
 
+	T range();
+	uint8_t occurenceOfValue(T testValue, T epsilon);
+	resultingT frequencyOfValue(T testValue, T epsilon);
+
+	resultingT meanAbsoluteDeviationAroundAverage();
+	resultingT meanAbsoluteDeviationAroundMedianAverage(uint8_t maxDistanceFromMedian);
+
+	resultingT average();
+
 	T median();
-	T medianAverage();
-	T average();
+	resultingT medianAverage();
+	resultingT medianAverage(uint8_t maxDistance);
+
+	resultingT averageInterval();
+	resultingT averageRateOfChange();
 
 	T medianInterval();
-	T medianAverageInterval();
-	T medianRateOfChange();			// 1/medianInterval
-	T medianAverageRateOfChange();	// 1/medianAverageInterval
-
-	T averageInterval();
-	T averageRateOfChange();
+	resultingT medianAverageInterval(uint8_t maxDistanceFromMedian);
+	resultingT medianRateOfChange();										// 1/medianInterval
+	resultingT medianAverageRateOfChange(uint8_t maxDistanceFromMedian);	// 1/medianAverageInterval
 
 	/*void debug(){
-		cout << "-----------" << endl;
+		std::cout << "-----------" << std::endl;
 		for (uint8_t i = 0; i < getCount(); i++){
 			itemQ *item = getItemAtPositionPtr(i);
-			cout << "V: " << item->value << "\t O: " << (int)item->insertOrder << "\t T: " << (int)item->time << endl;
+			std::cout << "V: " << (int)item->value << "\t O: " << (int)item->insertOrder << "\t T: " << (int)item->time << std::endl;
 		}
 	}*/
 
@@ -117,15 +171,18 @@ private:
 	struct itemQ {
 		uint8_t insertOrder{};
 		T value{};
-		unsignedT time{};
+		timeT time{};
 	};
 
 	static uint8_t getTruePos(uint8_t pos, uint8_t len, uint8_t capacity);
 
 	static T _median(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
-	static T _medianAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static resultingT _medianAverage(uint8_t tail, uint8_t len, uint8_t maxDistanceFromMedian, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static resultingT _meanAbsoluteDeviationAroundMedianAverage(uint8_t tail, uint8_t len, uint8_t maxDistanceFromMedian, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
-	static T _average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static resultingT _average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+	static resultingT _meanAbsoluteDeviationAroundAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
+
 	static void sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate));
 
 	itemQ* items;
@@ -134,16 +191,16 @@ private:
 	uint8_t _tail{};
 	bool _isFull{};
 
-	uint8_t _pushCount;
+	uint8_t _pushCount{};
 
 	static T getItemValue(const itemQ &item);
 	static T getItemInsertOrder(const itemQ &item);
 
-	bool valuesAreIntervals = false;
+	bool valuesAreGoodIntervals = false;
 
 	void resetItemOrderOldestToZero();	//oldest item will have internal counter set to zero, others will increment
 	void sortToInsertSequence();
-	void sortToValues();
+	void sortToValues(uint8_t len);
 	void intervalsToValues();
 
 	itemQ* peekItem();
@@ -152,16 +209,16 @@ private:
 
 //------------------pop push peek-----------------
 
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::push(T number, unsignedT currentTime) {
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::push(T number, timeT currentTime) {
 	_pushCount++; //non important, user info counter of all push operations
 
 	itemQ newitem;
 	newitem.value = number;
-	valuesAreIntervals = false;
+	valuesAreGoodIntervals = false;
 
 	newitem.time = currentTime;
-	//newitem.insertOrder is not important now; it is written pre shuffle, for returning back
+	//newitem.insertOrder is not important now; it is written pre shuffle, for reshuffling back
 
 	items[_head] = newitem;
 	if (_isFull){
@@ -171,14 +228,13 @@ void qmedianbuffer<T, unsignedT>::push(T number, unsignedT currentTime) {
 	_isFull = _head == _tail;
 }
 
-//pop will take the oldes one out, tracking insertion order;
-//if reason is timestamp being too old, it still works (insertOrder is unique)
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::pop() {
+//pop will take the oldes one out by tracking insertion order (not time)
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::pop() {
 
 	if (isEmpty()) return T();
 
-	valuesAreIntervals = false; //intervals are no longer valid
+	valuesAreGoodIntervals = false; //intervals are no longer valid
 
 	itemQ *item = getItemAtPositionPtr(0);
 	_isFull = false; //it will for sure not be full
@@ -187,26 +243,27 @@ T qmedianbuffer<T, unsignedT>::pop() {
 }
 
 //returns value of oldest item
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::peek() {
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::peek() {
 	return peekItem()->value;
 }
 
 //returns time of oldest item
-template<typename T, typename unsignedT>
-unsignedT qmedianbuffer<T, unsignedT>::peekTime() {
+template<typename T, typename timeT, typename resultingT>
+timeT qmedianbuffer<T, timeT, resultingT>::peekTime() {
 	return peekItem()->time;
 }
 
-template<typename T, typename unsignedT>
-typename qmedianbuffer<T, unsignedT>::itemQ* qmedianbuffer<T, unsignedT>::peekItem() {
+template<typename T, typename timeT, typename resultingT>
+typename qmedianbuffer<T, timeT, resultingT>::itemQ* qmedianbuffer<T, timeT, resultingT>::peekItem() {
 
 	itemQ* item = getItemAtPositionPtr(0);
 	return item;
 }
 
-template<typename T, typename unsignedT>
-bool qmedianbuffer<T, unsignedT>::deleteOlderThanInterval(unsignedT currentTimeStamp, unsignedT interval) {
+//deletes one item, older then current time - interval
+template<typename T, typename timeT, typename resultingT>
+bool qmedianbuffer<T, timeT, resultingT>::deleteOld(timeT currentTimeStamp, timeT interval) {
 
 	if (isEmpty()){
 		return false;
@@ -219,26 +276,26 @@ bool qmedianbuffer<T, unsignedT>::deleteOlderThanInterval(unsignedT currentTimeS
 }
 
 //never deletes, only resets counter, sorting is only between tail and tail+len
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::clear() {
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::clear() {
 	_head = _tail;
 	_isFull = false;
 }
 
-template<typename T, typename unsignedT>
-bool qmedianbuffer<T, unsignedT>::isFull() {
+template<typename T, typename timeT, typename resultingT>
+bool qmedianbuffer<T, timeT, resultingT>::isFull() {
 	return _isFull;
 }
 
 //tests if empty, and returns (mem consumption remains the same)
-template<typename T, typename unsignedT>
-bool qmedianbuffer<T, unsignedT>::isEmpty() {
+template<typename T, typename timeT, typename resultingT>
+bool qmedianbuffer<T, timeT, resultingT>::isEmpty() {
 	return (!_isFull && (_head == _tail));
 }
 
-//returns freshly calculated count, each time it is called
-template<typename T, typename unsignedT>
-uint8_t qmedianbuffer<T, unsignedT>::getCount() {
+//returns freshly calculated count, each time called
+template<typename T, typename timeT, typename resultingT>
+uint8_t qmedianbuffer<T, timeT, resultingT>::getCount() {
 	uint8_t retCount = _capacity;
 	if (!_isFull){
 		if (_head >= _tail){
@@ -252,20 +309,21 @@ uint8_t qmedianbuffer<T, unsignedT>::getCount() {
 }
 
 //returns simple count of push operations
-template<typename T, typename unsignedT>
-uint8_t qmedianbuffer<T, unsignedT>::getPushCount(){
+template<typename T, typename timeT, typename resultingT>
+uint8_t qmedianbuffer<T, timeT, resultingT>::getPushCount(){
 	return _pushCount;
 }
 
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::resetPushCount(){
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::resetPushCount(){
 	_pushCount = 0;
 }
 
+
 //------helper function to get pointer to item at position-----
 
-template<typename T, typename unsignedT>
-typename qmedianbuffer<T, unsignedT>::itemQ* qmedianbuffer<T, unsignedT>::getItemAtPositionPtr(uint8_t position) {
+template<typename T, typename timeT, typename resultingT>
+typename qmedianbuffer<T, timeT, resultingT>::itemQ* qmedianbuffer<T, timeT, resultingT>::getItemAtPositionPtr(uint8_t position) {
 
 	itemQ *item;
 
@@ -288,22 +346,23 @@ typename qmedianbuffer<T, unsignedT>::itemQ* qmedianbuffer<T, unsignedT>::getIte
 //------predicates to pass as function to get value for sorting-----
 
 //predicate to pass to quick select algorithm to sort by value
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::getItemValue(const itemQ &item) {
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::getItemValue(const itemQ &item) {
 	return item.value;
 }
 
 //predicate to pass to sort algorithm to sort by initial order
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::getItemInsertOrder(const itemQ &item) {
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::getItemInsertOrder(const itemQ &item) {
 	return (T)item.insertOrder; //casting needed for uniformity in sort
 }
+
 
 //----------------order functions-------------
 
 //call this to prepare array to sort it back to the original order later
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::resetItemOrderOldestToZero() {
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::resetItemOrderOldestToZero() {
 	//must be in insert sequence prior to this!
 	for (uint8_t i = 0; i < getCount(); i++){
 		itemQ *item = getItemAtPositionPtr(i);
@@ -311,99 +370,166 @@ void qmedianbuffer<T, unsignedT>::resetItemOrderOldestToZero() {
 	}
 }
 
-//back to input sequence, from numbers saved in each item, so we can push in sequence
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::sortToInsertSequence() {
+//back to input sequence, from numbers saved within each item
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::sortToInsertSequence() {
 	if (!isEmpty()){
 		sort(_tail, getCount(), items, _capacity, getItemInsertOrder);
 	}
 }
 
 //sort array order by values;
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::sortToValues() {
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::sortToValues(uint8_t len) {
 	if (!isEmpty()){
 		resetItemOrderOldestToZero();
-		sort(_tail, getCount(), items, _capacity, getItemValue);
+		sort(_tail, len, items, _capacity, getItemValue);
 	}
 }
 
-//---------fill values with interval between them----------
+
+//--------fill values with interval between sequential items----------
 
 //calculate intervals between items in sequence
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::intervalsToValues() {
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::intervalsToValues() {
 
-	if (!valuesAreIntervals){
+	if (!valuesAreGoodIntervals){
 
-		uint8_t count = getCount();
-		if (count < 2)	return; //or array error in loop
-
-		//only intervals between items are measured, and they should be in sequence
-		//result is written in previous item as value, so we are only measuring occurence
+		if (getCount() < 2)	return; //or array error in loop
+		/*
+		only intervals between items are measured, and they should be in sequence
+		result is written in previous item as value, so we are only measuring occurence
+		there can be only len - 1 intervals
+		*/
 		itemQ* itemPrev = getItemAtPositionPtr(0); //tail
-		for (uint8_t i = 1; i < count; i++){
+		for (uint8_t i = 1; i < getCount(); i++){
 			itemQ *itemNext = getItemAtPositionPtr(i);
-			unsignedT intervalDifference = (itemNext->time - itemPrev->time);
-			itemPrev->value = intervalDifference;
-			itemPrev = NULL;
+			timeT intervalDifference = (itemNext->time - itemPrev->time);
+			itemPrev->value = intervalDifference; //make sure .value <T> is big enough to hold intervaldiff
+			itemPrev = nullptr;
 			itemPrev = itemNext;
 			i = i;
 		}
 		itemPrev->value = 0; //but median should ignore it anyway
-		valuesAreIntervals = true;
+		valuesAreGoodIntervals = true;
 	}
 }
 
 
 //-----------statistical functions-------------
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::minValue() {
-	sortToValues();
-	T retVal = getItemAtPositionPtr(0)->value;
-	sortToInsertSequence();
-	return retVal;
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::minValue() {
 
+	T tempMinV = getItemAtPositionPtr(0)->value; //this just servs to set default value (0)
+
+	for (uint8_t i = 1; i < getCount(); i++)
+	{
+		T testValue = getItemAtPositionPtr(i)->value;
+		if (testValue < tempMinV) tempMinV = testValue;
+	}
+
+	return tempMinV;
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::maxValue() {
-	sortToValues();
-	T retVal = getItemAtPositionPtr(getCount() - 1)->value;
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::maxValue() {
+
+	T tempMaxV = getItemAtPositionPtr(0)->value;//this just servs to set default value (0)
+
+	for (uint8_t i = 1; i < getCount(); i++)
+	{
+		T testValue = getItemAtPositionPtr(i)->value;
+		if (testValue > tempMaxV) tempMaxV = testValue;
+	}
+	return 	tempMaxV;
+}
+
+//max - min value, statistical function, but not to be used with raw, sensor numbers
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::range()
+{
+	return maxValue() - minValue();
+}
+
+
+//number of occurence of value within buffer, with difference less then epsilon
+template<typename T, typename timeT, typename resultingT>
+uint8_t qmedianbuffer<T, timeT, resultingT>::occurenceOfValue(T testValue, T epsilon)
+{
+	uint8_t nOfTimes = 0;
+	for (uint8_t i = 0; i < getCount(); i++){
+
+		T arrayValue = getItemAtPositionPtr(i)->value;
+		/*
+		since standard abs(x) function doesn't work with integers,
+		and we may not care at the moment to cast to <resultingT>, use this macro
+		*/
+		if (absX(arrayValue - testValue) < epsilon) nOfTimes++;
+	}
+	return nOfTimes;
+}
+
+//number of occurence of value within buffer, with difference always less then epsilon, devided by count
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::frequencyOfValue(T testValue, T epsilon)
+{
+	return (resultingT)occurenceOfValue(testValue, epsilon) / getCount();
+}
+
+//mean absolute deviation around calculated average of all
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::meanAbsoluteDeviationAroundAverage()
+{
+	return _meanAbsoluteDeviationAroundAverage(_tail, getCount(), items, _capacity, getItemValue);
+}
+
+//mean absolute deviation ardound medianaverage
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::meanAbsoluteDeviationAroundMedianAverage(uint8_t maxDistanceFromMedian)
+{
+	sortToValues(getCount());
+	resultingT retVal = _meanAbsoluteDeviationAroundMedianAverage(_tail, getCount(), maxDistanceFromMedian, items, _capacity, getItemValue);
 	sortToInsertSequence();
 	return retVal;
 }
 
-
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::medianAverage() {
-	sortToValues();
-	T retVal = _medianAverage(_tail, getCount(), items, _capacity, getItemValue);
-	sortToInsertSequence();
-	return retVal;
-}
-
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::median() {
-	sortToValues();
+//original, unchanged median value
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::median() {
+	sortToValues(getCount());
 	T retVal = _median(_tail, getCount(), items, _capacity, getItemValue);
+	sortToInsertSequence();
+	return retVal;
+}
+
+//shortcut to average of median and all points in range +-length/4
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::medianAverage() {
+	return medianAverage(getCount() / 4);
+}
+
+//average of median and -+points at distance
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::medianAverage(uint8_t maxDistanceFromMedian) {
+	sortToValues(getCount());
+	resultingT retVal = _medianAverage(_tail, getCount(), maxDistanceFromMedian, items, _capacity, getItemValue);
 	sortToInsertSequence();
 	return retVal;
 }
 
 //if items in buffer are type of occurence, of no important value
 //then measure average interval (at least 2 items to make any sense)
-//intervals are written to value field, and no longer valid as plan "value"
-//when pop/push happens, items are also no longer valid
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::medianInterval() {
+//intervals are written to .value field, and original .value is lost
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::medianInterval() {
 
 	uint8_t length = getCount();
 	if (length < 2)	return T();
 
-	intervalsToValues();	//will not run if already done
-	sortToValues();
+	intervalsToValues();		//will not run if already done
+	sortToValues(length - 1);	//the last one does not cointain interval
 
 	//check all, but ignore last one, it should be 0!
 	T retVal = _median(_tail, length - 1, items, _capacity, getItemValue);
@@ -412,89 +538,118 @@ T qmedianbuffer<T, unsignedT>::medianInterval() {
 	return retVal;
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::medianAverageInterval() {
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::medianAverageInterval(uint8_t maxDistanceFromMedian) {
 
 	uint8_t length = getCount();
-	if (length < 2)	return T();
+	if (length < 2)	return resultingT();
 
 	intervalsToValues();	//will not run if already done
-	sortToValuesIfNeeded();
+	sortToValues(length - 1);
 
 	//check all, but ignore last one, it should be 0!
-	T retVal = _medianAverage(_tail, length - 1, items, _capacity, getItemValue);
+	resultingT retVal = _medianAverage(_tail, length - 1, maxDistanceFromMedian, items, _capacity, getItemValue);
 
 	sortToInsertSequence();
 	return retVal;
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::medianRateOfChange() {
-	if (getCount() < 2)	return T();
-	return 1 / medianInterval();
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::medianRateOfChange() {
+	if (getCount() < 2)	return resultingT();
+	return 1 / (resultingT)medianInterval();
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::medianAverageRateOfChange() {
-	if (getCount() < 2)	return T();
-	return 1 / medianAverageInterval();
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::medianAverageRateOfChange(uint8_t maxDistanceFromMedian) {
+	if (getCount() < 2)	return resultingT();
+	return 1 / medianAverageInterval(maxDistanceFromMedian);
 }
 
-
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::average() {
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::average() {
 	//average does not shuffle order of items
 	return _average(_tail, getCount(), items, _capacity, getItemValue);
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::averageInterval() {
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::averageInterval() {
 
 	uint8_t length = getCount();
-	if (length < 2)	return T();
+	if (length < 2)	return resultingT();
 
 	intervalsToValues();
 
-	//check all, but ignore last one, it should be 0!
+	//check all, but ignore last one, it does not cointain interval
 	return _average(_tail, length - 1, items, _capacity, getItemValue);
 }
 
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::averageRateOfChange() {
-	if (getCount() < 2)	return T();
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::averageRateOfChange() {
+	if (getCount() < 2)	return resultingT();
 	return 1 / averageInterval();
 }
 
 
 //---------------static median and average functions------------------
+/*
+NOTE: some averaging parts need ABS(x) function; however if <resultinF> is unsigned int, abs will throw
+compilation error. So custom absX is provided, since user _may_ want to have median in other values
+*/
 
 //helper function to get actual position of item in array, regarding tail (integer overflow calculations)
-template<typename T, typename unsignedT>
-uint8_t qmedianbuffer<T, unsignedT>::getTruePos(uint8_t posSeek, uint8_t tail, uint8_t capacity){
-	uint8_t truePos = (posSeek + tail) % capacity;
-	return truePos;
+template<typename T, typename timeT, typename resultingT>
+uint8_t qmedianbuffer<T, timeT, resultingT>::getTruePos(uint8_t posSeek, uint8_t tail, uint8_t capacity){
+	return (posSeek + tail) % capacity;
 }
 
-//max sum must never be bigger then T
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::_average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
-	T sum{}, avg{}, itemValue{};
+
+//standard average function
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::_average(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+
+	/*
+	this will average numbers, trying to avoid overflow;
+	note that medianaverage function can also do the same job, but this one is left here to make it easier to follow process
+	*/
+	resultingT avg{};
+
 	for (uint8_t i = 0; i < len; i++){
-		itemValue = getSortValueFunc(arr[getTruePos(i, tail, arrCapacity)]);
+		resultingT itemValue = (resultingT)getSortValueFunc(arr[getTruePos(i, tail, arrCapacity)]);
 #if EXPECT_BIG_NUMBERS
-		avg = (itemValue - avg) / (i + 1) + avg; //simple approach to try to avoid overflow with big numbers; use double type if need more precision
+		avg = (itemValue - avg) / (i + 1) + avg; //simple approach to try to avoid overflow with big numbers; use double type if needed more precision
 	}
 #else		
-		sum = sum + itemValue; //use double type, or any bigger type, big enough to hold sum of array, since it will owerflow
+		avg = avg + itemValue; //use double type, or any bigger type, big enough to hold sum of array, since it will owerflow
 	}
-	avg = sum / len;
+	avg = avg / len;
 #endif		
 	return avg;
 }
 
-//pick median in previously sorted array, it will always be exact number
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::_median(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+//mean absolute deviation around average
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::_meanAbsoluteDeviationAroundAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate))
+{
+	resultingT avg = _average(tail, len, arr, arrCapacity, getSortValueFunc);
+	resultingT mada = 0;
+
+	for (uint8_t i = 0; i < len; i++){
+		resultingT arrayValue = (resultingT)getSortValueFunc(arr[getTruePos(i, tail, arrCapacity)]);
+#if EXPECT_BIG_NUMBERS
+		mada = (absX(arrayValue - avg) - mada) / (i + 1) + mada;
+	}
+#else
+		mada = absX(arrayValue - avg) + mada;
+	}
+	mada = mada / len;
+#endif	
+	return mada;
+}
+
+//pick median in previously sorted array; always original numeric value, no averaging at any time
+template<typename T, typename timeT, typename resultingT>
+T qmedianbuffer<T, timeT, resultingT>::_median(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
 	if (len == 0) {
 		return T();
 	}
@@ -505,58 +660,103 @@ T qmedianbuffer<T, unsignedT>::_median(uint8_t tail, uint8_t len, itemQ *arr, ui
 	return getSortValueFunc(arr[getTruePos(len / 2, tail, arrCapacity)]);
 }
 
-//pick median in previously sorted array
-template<typename T, typename unsignedT>
-T qmedianbuffer<T, unsignedT>::_medianAverage(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+//pick median, and average with surrounding numbers with max distance of it
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::_medianAverage(uint8_t tail, uint8_t len, uint8_t maxDistanceFromMedian, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+
+	/*
+	median is in the middle of sorted array
+	start at the -maxdistance, go over median, and finish at +maxdistance
+	average numbers and return; if len is even, then median is middle of two middle numbers
+	that means that in case of len = 6, distance = 1, evaluated array items are => | 0, 1, (1, 1), 1, 0 |; total = 4
+	this function can be used for averaging if needed, where max distance = len/2
+	*/
+
 	if (len == 0) {
-		return T();
+		return resultingT();
 	}
 	if (len == 1) {
-		return getSortValueFunc(arr[getTruePos(0, tail, arrCapacity)]);
+		return (resultingT)getSortValueFunc(arr[getTruePos(0, tail, arrCapacity)]);
 	}
 
-	//there appears to be two ways people calculate median; the latter is used in this library
-	//	(double)(a[(n - 1) / 2] + a[n / 2]) / 2.0
-	//	(double)(a[(n / 2) - 1] + a[n / 2]) / 2.0
+	uint8_t evenNumCorrection = 0;
+	if (len % 2 == 0) evenNumCorrection = 1;
 
-	uint8_t pos = len / 2;
-	T median;
-	if (len % 2 == 0)	// Even number of elements, median is average of middle two
-	{
-		T medi = getSortValueFunc(arr[getTruePos(pos, tail, arrCapacity)]);
-		T mediminus = getSortValueFunc(arr[getTruePos(pos - 1, tail, arrCapacity)]);
-#if EXPECT_BIG_NUMBERS
-		T avg2 = medi / 2 + mediminus / 2; //devide here to try to avoid overflow of big numbers
-#else
-		T avg2 = (medi + mediminus) / 2;
-#endif
-		median = avg2;
+	if (maxDistanceFromMedian > len / 2) maxDistanceFromMedian = len / 2;
+	uint8_t startpos = len / 2 - maxDistanceFromMedian - evenNumCorrection; //so middle is found, start earlier
+	uint8_t total = 1 + 2 * maxDistanceFromMedian + evenNumCorrection; //so middle is found, it is one more
+
+	resultingT avgN{}, mPosition;
+
+	for (uint8_t i = 0; i < total; i++){
+		mPosition = (resultingT)getSortValueFunc(arr[getTruePos(startpos + i, tail, arrCapacity)]); //position up
+#if EXPECT_BIG_NUMBERS			
+		avgN = (mPosition - avgN) / (i + 1) + avgN; //simple approach to try to avoid overflow with big numbers; use double type if needed more precision
 	}
-	else // select middle element, -1, +1, and average of that
-	{
-		//NOTE: quick select will exit without rearanging all if it finds its goal
-		T medi = getSortValueFunc(arr[getTruePos(pos, tail, arrCapacity)]);
-		T mediminus = getSortValueFunc(arr[getTruePos(pos - 1, tail, arrCapacity)]);
-		T mediplus = getSortValueFunc(arr[getTruePos(pos + 1, tail, arrCapacity)]);
-#if EXPECT_BIG_NUMBERS
-		T avg3 = medi / 3 + mediminus / 3 + mediplus / 3; //devide here to try to avoid overflow of big numbers
 #else
-		T avg3 = (medi + mediminus + mediplus) / 3;
-#endif
-		median = avg3;
+		avgN = mPosition + avgN;
 	}
-	return median;
+	//and finaly
+	avgN = avgN / total;
+#endif
+
+	return avgN;
 }
+
+//pick median, and average with surrounding numbers with max distance of it
+template<typename T, typename timeT, typename resultingT>
+resultingT qmedianbuffer<T, timeT, resultingT>::_meanAbsoluteDeviationAroundMedianAverage(uint8_t tail, uint8_t len, uint8_t maxDistanceFromMedian, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)){
+
+	/*
+	this is actually simple thing - average of numbers around median!
+	median is in the middle of sorted array, if len is even, then median is middle of two middle numbers
+	start at the -maxdistance, go over median, and finish at +maxdistance
+	average numbers and return
+	that means that in case of len = 6, distance = 1, evaluated array items are => | 0, 1, (1, 1), 1, 0 |; total = 4
+	*/
+
+	if (len < 2) {
+		return resultingT();
+	}
+
+	//get median (average using same distance) first
+	resultingT med = _medianAverage(tail, len, maxDistanceFromMedian, arr, arrCapacity, getSortValueFunc); //max dist must be 0 to get real median
+
+	//then average all around it at max distance
+	uint8_t evenNumCorrection = 0;
+	if (len % 2 == 0) evenNumCorrection = 1;
+
+	if (maxDistanceFromMedian > len / 2) maxDistanceFromMedian = len / 2;
+	uint8_t startpos = len / 2 - maxDistanceFromMedian - evenNumCorrection; //so middle is found, start earlier
+	uint8_t total = 1 + 2 * maxDistanceFromMedian + evenNumCorrection; //so middle is found, it is one more
+
+	resultingT avgMAD{};
+
+	for (uint8_t i = 0; i < total; i++){
+		resultingT mPosition = (resultingT)getSortValueFunc(arr[getTruePos(startpos + i, tail, arrCapacity)]); //position up
+#if EXPECT_BIG_NUMBERS //simple approach to try to avoid overflow with big numbers; use double type if needed more precision
+		avgMAD = (absX(mPosition - med) - avgMAD) / (i + 1) + avgMAD;
+	}
+#else
+		avgMAD = absX(mPosition - med) + avgMAD;
+	}
+	//and finaly
+	avgMAD = avgMAD / total;
+#endif
+
+	return avgMAD;
+}
+
 
 //---------------static select and sort functions------------------
 
 //standard insertionSort algorithm, done in one pass
-template<typename T, typename unsignedT>
-void qmedianbuffer<T, unsignedT>::sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
-	uint8_t i;
+template<typename T, typename timeT, typename resultingT>
+void qmedianbuffer<T, timeT, resultingT>::sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
+	
 	int j; //needs to be signed since in while loop, it will become -1 to exit while
 	itemQ tmp;
-	for (i = 1; i < len; i++)
+	for (uint8_t i = 1; i < len; i++)
 	{
 		tmp = arr[getTruePos(i, tail, arrCapacity)];
 		j = i - 1;
