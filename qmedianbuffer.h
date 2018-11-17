@@ -14,9 +14,9 @@
    and there is no need for bigger or more complex solutions.
 
    NOTE important:
-   type of <T> must be big enogh to hold SUM of entire array if any function that averages
-   values is used. To handle this, just set T big enough.
-   However, humans tend to forget this and thus unexpected values could appear unnoticed
+   type of <resultT> must be big enough to hold SUM of entire array if any function that averages
+   values is used. To handle this, just set <resultT> big enough.
+   However, humans tend to forget this, but even so, unexpected values could appear unnoticed
    because of overflow. So, approach here is the oposite: approximation on averaging is used,
    with introduction of small error every time, but less fail when bigger numbers appear.
    If you happen to notice this, and that precission is not good enough for you, turn it off,
@@ -50,9 +50,9 @@
    -<resultingT> type used for math operations; the idea is that you can have
    any numeric type in buffer, like <uint16_t>, but had result as double (say, 32bits)
 
-   -each data entry is size <T> + <timeT> + 1 byte
+   -each data entry is the size of (<T> + <timeT> + 1 byte)
 
-   -max count 255
+   -max count: 255
    -take care, any average() operation is with slight error due to approximations
    -it is a smart thing to clear buffer after each statistical function,
    to remove old values, so that way you always have a fresh set of data,
@@ -80,11 +80,11 @@
 //-----------------------------------------------------------------------------------------------
 
 
-//this implementation of ABS() may be slower but works with both unsigned long and floating types
+//this implementation of abs() may be slower but works with both unsigned long and floating types
 #if RESTRICT_TYPES_OF_DATA
 #define absX(value) ((value) < 0 ? -1*(value) : (value))
 #else
-#define absX(value) abs(value)
+#define absX(value) abs(value) //standard abs has compile error if <resultingT> is unsigned long/int
 #endif
 
 //tests about types; if STD library is available, this may be removed, and std used
@@ -99,7 +99,7 @@ and the result would be the same as if there was no casting at all
 */
 
 
-//<T> numeric data stored; <timeT> strictly UNSIGNED type for time data, <resultingT> return type of math heavy functions
+//<T> numeric data stored; <timeT> strictly UNSIGNED type for incremental time data, <resultingT> return type of math heavy functions
 template<typename T, typename timeT, typename resultingT>
 class qmedianbuffer
 {
@@ -422,7 +422,7 @@ void qmedianbuffer<T, timeT, resultingT>::intervalsToValues() {
 template<typename T, typename timeT, typename resultingT>
 T qmedianbuffer<T, timeT, resultingT>::minValue() {
 
-	T tempMinV = getItemAtPositionPtr(0)->value; //this just servs to set default value (0)
+	T tempMinV = getItemAtPositionPtr(0)->value; //set default value (0)
 
 	for (uint8_t i = 1; i < getCount(); i++)
 	{
@@ -436,7 +436,7 @@ T qmedianbuffer<T, timeT, resultingT>::minValue() {
 template<typename T, typename timeT, typename resultingT>
 T qmedianbuffer<T, timeT, resultingT>::maxValue() {
 
-	T tempMaxV = getItemAtPositionPtr(0)->value;//this just servs to set default value (0)
+	T tempMaxV = getItemAtPositionPtr(0)->value;//set default value (0)
 
 	for (uint8_t i = 1; i < getCount(); i++)
 	{
@@ -446,7 +446,7 @@ T qmedianbuffer<T, timeT, resultingT>::maxValue() {
 	return 	tempMaxV;
 }
 
-//max - min value, statistical function, but not to be used with raw, sensor numbers
+//max - min value, statistical function
 template<typename T, typename timeT, typename resultingT>
 T qmedianbuffer<T, timeT, resultingT>::range()
 {
@@ -753,7 +753,7 @@ resultingT qmedianbuffer<T, timeT, resultingT>::_meanAbsoluteDeviationAroundMedi
 //standard insertionSort algorithm, done in one pass
 template<typename T, typename timeT, typename resultingT>
 void qmedianbuffer<T, timeT, resultingT>::sort(uint8_t tail, uint8_t len, itemQ *arr, uint8_t arrCapacity, T(*getSortValueFunc)(const itemQ &objToEvaluate)) {
-	
+
 	int j; //needs to be signed since in while loop, it will become -1 to exit while
 	itemQ tmp;
 	for (uint8_t i = 1; i < len; i++)
